@@ -34,13 +34,6 @@ async def get_latency_stats(db: AsyncSession = Depends(get_db)):
     if total_reviews == 0:
         return LatencyStats()
 
-    # Latency stats from review_results
-    stats_stmt = select(
-        func.avg(ReviewResult.latency_ms),
-        func.min(ReviewResult.latency_ms),
-        func.max(ReviewResult.latency_ms),
-        func.sum(func.cast(ReviewResult.llm_called, type_=lambda: None)),  # noqa
-    )
     # Simpler approach: get all results and compute in Python
     all_results_stmt = select(ReviewResult)
     all_results = await db.execute(all_results_stmt)
