@@ -181,7 +181,7 @@ async def run_review_pipeline(
     )
     stage_timings["llm_ms"] = round((time.time() - t0) * 1000)
 
-    # If LLM itself errored, skip grounding
+    # If LLM itself errored, skip grounding — DO NOT cache error results
     if llm_result.error:
         result = ReviewResult(
             contract_id=contract_id,
@@ -195,7 +195,10 @@ async def run_review_pipeline(
             latency_ms=round((time.time() - pipeline_start) * 1000),
             llm_called=True,
         )
-        await store_result(result, db)
+        # Persist to DB for logging only, but don't cache the error
+        db.add(result)
+        await db.commit()
+        await db.refresh(result)
 
         query_log = QueryLog(
             request_id=request_id,

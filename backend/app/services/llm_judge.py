@@ -3,7 +3,8 @@ LLM judgment step — Gemini API call with structured JSON output.
 Only called when gap_check confirms the clause exists.
 See Plan.md §9.
 
-Uses structured output (response_mime_type: application/json) so the model
+Uses the google-genai SDK (successor to google-generativeai).
+Structured output via response_mime_type: application/json so the model
 is schema-constrained. 'Not Enough Information' is deliberately excluded from
 the LLM's allowed enum — that state is only produced by gap_check.py.
 """
@@ -12,28 +13,15 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from google.api_core import exceptions as google_exceptions
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-
-# Structured output schema for the Gemini response.
-# Note: 'Not Enough Information' is NOT in the enum — see Plan.md §9.1.
-_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "risk_level": {"type": "string", "enum": ["Low Risk", "Medium Risk", "High Risk"]},
-        "reason": {"type": "string"},
-        "contract_evidence_quote": {"type": "string"},
-        "standard_evidence_quote": {"type": "string"},
-    },
-    "required": ["risk_level", "reason", "contract_evidence_quote", "standard_evidence_quote"],
-}
 
 # Prompt template — verbatim from Plan.md §9.2
 _PROMPT_TEMPLATE = """You are assisting a human contract reviewer. You are not a lawyer and must not give
@@ -68,7 +56,7 @@ Company standard ({standard_id}):
 {standard_text}
 \"\"\"
 
-Return only the JSON object, no other text."""
+Return only the JSON object with keys: risk_level, reason, contract_evidence_quote, standard_evidence_quote."""
 
 
 @dataclass
@@ -83,9 +71,9 @@ class LLMJudgmentResult:
     error_message: str | None = None
 
 
-def _configure_client() -> None:
-    """Configure the Gemini client with the API key."""
-    genai.configure(api_key=settings.gemini_api_key)
+def _get_client() -> genai.Client:
+    """Create and return a Gemini client configured with the API key."""
+    return genai.Client(api_key=settings.gemini_api_key)
 
 
 async def call_llm_judge(
@@ -101,7 +89,7 @@ async def call_llm_judge(
     (0.5s, 1.5s). On final failure, returns a soft-failure 'Not Enough
     Information' result rather than crashing. See Plan.md §9.2a.
     """
-    _configure_client()
+    client = _get_client()
 
     prompt = _PROMPT_TEMPLATE.format(
         category=category,
@@ -110,27 +98,25 @@ async def call_llm_judge(
         standard_text=standard_text,
     )
 
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
     max_retries = 2
     backoff_delays = [0.5, 1.5]
     retries_used = 0
 
     for attempt in range(max_retries + 1):
         try:
-            response = model.generate_content(
-                prompt,
-                generation_config={
-                    "response_mime_type": "application/json",
-                    "response_schema": _RESPONSE_SCHEMA,
-                },
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
             )
 
             # Parse the JSON response
             response_text = response.text
             parsed = json.loads(response_text)
 
-            # Validate the response shape (Pydantic-level validation happens upstream)
+            # Validate the response shape
             risk_level = parsed.get("risk_level", "")
             if risk_level not in ("Low Risk", "Medium Risk", "High Risk"):
                 raise ValueError(f"Invalid risk_level from LLM: '{risk_level}'")
@@ -204,6 +190,23 @@ async def call_llm_judge(
             )
 
         except Exception as e:
+            error_str = str(e)
+            # Check if this is a retryable rate-limit/transient error
+            # from the new SDK (thrown as generic exceptions with status in message)
+            is_retryable = any(
+                kw in error_str for kw in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
+            )
+            if is_retryable and attempt < max_retries:
+                retries_used += 1
+                delay = backoff_delays[attempt]
+                logger.warning(
+                    f"LLM transient error (attempt {attempt + 1}/{max_retries + 1}), "
+                    f"retrying in {delay}s: {e}",
+                    extra={"stage": "llm_judge", "category": category},
+                )
+                time.sleep(delay)
+                continue
+
             logger.error(
                 f"Unexpected LLM error: {e}",
                 extra={"stage": "llm_judge", "category": category},
