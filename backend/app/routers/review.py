@@ -22,6 +22,7 @@ from app.models.schemas import (
 )
 from app.services.pipeline import run_review_pipeline
 from app.services.classifier import CANONICAL_CATEGORIES
+from app.services.intent import AmbiguousIntentError
 
 logger = logging.getLogger(__name__)
 
@@ -88,27 +89,22 @@ async def create_review(
     If intent is ambiguous, returns 422 with candidate categories.
     """
     try:
-        result, intent_result = await run_review_pipeline(
+        result, intent_result, was_cached = await run_review_pipeline(
             contract_id=body.contract_id,
             category=body.category,
             question=body.question,
             data=data,
             db=db,
         )
+    except AmbiguousIntentError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=AmbiguousIntentResponse(
+                candidate_categories=e.candidate_categories
+            ).model_dump(),
+        )
     except ValueError as e:
         error_msg = str(e)
-
-        if error_msg == "ambiguous_intent":
-            # Intent classification couldn't resolve — ask user to pick manually
-            from app.services.intent import classify_intent
-            intent = classify_intent(body.question or "")
-            raise HTTPException(
-                status_code=422,
-                detail=AmbiguousIntentResponse(
-                    candidate_categories=intent.candidate_categories
-                ).model_dump(),
-            )
-
         if "Unknown contract_id" in error_msg:
             raise HTTPException(status_code=404, detail=error_msg)
 
@@ -124,7 +120,7 @@ async def create_review(
         standard_text=result.standard_text,
         reason=result.reason,
         human_review_required=True,
-        cached=False,  # TODO: track from pipeline
+        cached=was_cached,
         grounding_passed=result.grounding_passed,
         latency_ms=result.latency_ms,
     )

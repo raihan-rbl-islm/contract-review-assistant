@@ -30,6 +30,7 @@ export default function ReviewActions({
       setSubmitted(decision);
       onDecisionSubmitted?.(decision);
     } catch (e) {
+      console.error("Error submitting decision:", e);
       setError("Failed to submit decision. Please try again.");
     } finally {
       setSubmitting(false);
@@ -44,8 +45,8 @@ export default function ReviewActions({
     };
     return (
       <div className="review-actions submitted">
-        <div className="decision-badge">
-          ✓ {labels[submitted]}
+        <div className={`decision-badge decision-${submitted}`}>
+          {submitted === "approve" ? "✓" : submitted === "reject" ? "✗" : "⚑"} {labels[submitted]}
         </div>
         {feedbackText && (
           <p className="feedback-note">Feedback: &ldquo;{feedbackText}&rdquo;</p>

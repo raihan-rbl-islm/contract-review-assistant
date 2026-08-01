@@ -12,7 +12,13 @@ Algorithm:
 """
 
 import logging
+import re
 from dataclasses import dataclass
+
+class AmbiguousIntentError(Exception):
+    def __init__(self, candidate_categories: list[str]):
+        self.candidate_categories = candidate_categories
+        super().__init__(f"Ambiguous intent. Candidates: {candidate_categories}")
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +36,7 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
         "termination-for-breach", "terminate for breach",
     ],
     "Data Protection": [
-        "data protection", "security", "breach notice", "subprocessor",
+        "data protection", "security", "breach notice", "subprocessor", "subprocessors",
         "use of data", "data return", "data deletion",
         "data breach", "encryption", "encrypt", "stored data",
         "personal data", "breach notification",
@@ -81,7 +87,7 @@ def classify_intent(question: str) -> IntentResult:
     for category, keywords in INTENT_KEYWORDS.items():
         score = 0
         for keyword in keywords:
-            if keyword in question_lower:
+            if re.search(rf"\b{re.escape(keyword)}\b", question_lower):
                 score += 1
         scores[category] = score
 

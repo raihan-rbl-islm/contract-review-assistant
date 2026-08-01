@@ -693,10 +693,23 @@ h2 {
 .decision-badge {
   font-weight: 500;
   font-size: 0.875rem;
-  color: var(--color-risk-low);
   padding: 8px 16px;
-  background: var(--color-success-bg);
   border-radius: 4px;
+}
+
+.decision-approve {
+  color: var(--color-risk-low);
+  background: var(--color-success-bg);
+}
+
+.decision-reject {
+  color: var(--color-risk-high);
+  background: var(--color-error-bg);
+}
+
+.decision-mark_for_review {
+  color: var(--color-accent);
+  background: #FFF8E1;
 }
 
 .feedback-note {

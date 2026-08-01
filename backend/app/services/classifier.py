@@ -9,6 +9,7 @@ preserved for evidence display.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from app.services.segmenter import ClauseInstance
@@ -23,7 +24,7 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "Payment": ["payment", "invoice", "fee"],
     "Termination": ["termination", "terminate"],
     "Data Protection": [
-        "data protection", "security", "breach notice", "subprocessor",
+        "data protection", "security", "breach notice", "subprocessor", "subprocessors",
         "use of data", "data return", "data deletion",
     ],
     "Confidentiality": ["confidentiality", "confidential"],
@@ -54,7 +55,7 @@ def _classify_heading(heading: str) -> str | None:
     heading_lower = heading.lower()
     for category, keywords in CATEGORY_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in heading_lower:
+            if re.search(rf"\b{re.escape(keyword)}\b", heading_lower):
                 return category
     return None
 
@@ -66,7 +67,7 @@ def _classify_by_body(body: str) -> str | None:
     body_lower = body.lower()
     for category, keywords in CATEGORY_KEYWORDS.items():
         for keyword in keywords:
-            if keyword in body_lower:
+            if re.search(rf"\b{re.escape(keyword)}\b", body_lower):
                 return category
     return None
 

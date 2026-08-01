@@ -9,6 +9,7 @@ is schema-constrained. 'Not Enough Information' is deliberately excluded from
 the LLM's allowed enum — that state is only produced by gap_check.py.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 
 from google import genai
 from google.genai import types
-from google.api_core import exceptions as google_exceptions
+from google.genai import errors as genai_errors
 
 from app.config import settings
 
@@ -104,7 +105,7 @@ async def call_llm_judge(
 
     for attempt in range(max_retries + 1):
         try:
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -145,34 +146,34 @@ async def call_llm_judge(
                 retries_used=retries_used,
             )
 
-        except (
-            google_exceptions.ServiceUnavailable,
-            google_exceptions.ResourceExhausted,
-            google_exceptions.DeadlineExceeded,
-        ) as e:
-            retries_used += 1
-            if attempt < max_retries:
+        except (genai_errors.ClientError, genai_errors.ServerError) as e:
+            error_str = str(e)
+            is_retryable = any(kw in error_str for kw in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"))
+            if is_retryable and attempt < max_retries:
+                retries_used += 1
                 delay = backoff_delays[attempt]
                 logger.warning(
                     f"LLM transient error (attempt {attempt + 1}/{max_retries + 1}), "
                     f"retrying in {delay}s: {e}",
                     extra={"stage": "llm_judge", "category": category},
                 )
-                time.sleep(delay)
-            else:
-                logger.error(
-                    f"LLM failed after {max_retries + 1} attempts: {e}",
-                    extra={"stage": "llm_judge", "category": category},
-                )
-                return LLMJudgmentResult(
-                    risk_level="Not Enough Information",
-                    reason="The review service is temporarily unavailable. Please try again or review this clause manually.",
-                    contract_evidence_quote="",
-                    standard_evidence_quote="",
-                    retries_used=retries_used,
-                    error=True,
-                    error_message=str(e),
-                )
+                await asyncio.sleep(delay)
+                continue
+            
+            # Fall through for non-retryable or max retries exceeded
+            logger.error(
+                f"LLM failed after {attempt + 1} attempts: {e}",
+                extra={"stage": "llm_judge", "category": category},
+            )
+            return LLMJudgmentResult(
+                risk_level="Not Enough Information",
+                reason="The review service is temporarily unavailable. Please try again or review this clause manually.",
+                contract_evidence_quote="",
+                standard_evidence_quote="",
+                retries_used=retries_used,
+                error=True,
+                error_message=str(e),
+            )
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.error(
@@ -190,23 +191,6 @@ async def call_llm_judge(
             )
 
         except Exception as e:
-            error_str = str(e)
-            # Check if this is a retryable rate-limit/transient error
-            # from the new SDK (thrown as generic exceptions with status in message)
-            is_retryable = any(
-                kw in error_str for kw in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
-            )
-            if is_retryable and attempt < max_retries:
-                retries_used += 1
-                delay = backoff_delays[attempt]
-                logger.warning(
-                    f"LLM transient error (attempt {attempt + 1}/{max_retries + 1}), "
-                    f"retrying in {delay}s: {e}",
-                    extra={"stage": "llm_judge", "category": category},
-                )
-                time.sleep(delay)
-                continue
-
             logger.error(
                 f"Unexpected LLM error: {e}",
                 extra={"stage": "llm_judge", "category": category},
@@ -220,6 +204,8 @@ async def call_llm_judge(
                 error=True,
                 error_message=str(e),
             )
+
+
 
     # Should not reach here, but defensive
     return LLMJudgmentResult(

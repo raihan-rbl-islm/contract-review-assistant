@@ -19,7 +19,7 @@ from app.models.db_models import ReviewResult, QueryLog
 from app.models.schemas import RiskLevel, InputMode, GroundingMethod
 from app.services.segmenter import segment_contract
 from app.services.classifier import classify_clauses
-from app.services.intent import classify_intent, IntentResult
+from app.services.intent import classify_intent, IntentResult, AmbiguousIntentError
 from app.services.standards import lookup_standard
 from app.services.gap_check import check_gap
 from app.services.cache import get_cached_result, store_result
@@ -35,11 +35,11 @@ async def run_review_pipeline(
     question: Optional[str],
     data: LoadedData,
     db: AsyncSession,
-) -> tuple[ReviewResult, Optional[IntentResult]]:
+) -> tuple[ReviewResult, Optional[IntentResult], bool]:
     """
     Run the full review pipeline for a contract + category (or question).
 
-    Returns (ReviewResult, IntentResult_or_None).
+    Returns (ReviewResult, IntentResult_or_None, bool_was_cached).
     Raises ValueError for invalid input (unknown contract, ambiguous intent, etc.).
     """
     request_id = str(uuid.uuid4())
@@ -76,7 +76,7 @@ async def run_review_pipeline(
             )
             db.add(query_log)
             await db.commit()
-            raise ValueError("ambiguous_intent")
+            raise AmbiguousIntentError(intent_result.candidate_categories)
 
         category = intent_result.category
 
@@ -109,7 +109,7 @@ async def run_review_pipeline(
             f"Pipeline complete (cached): {contract_id}/{category} in {total_ms}ms",
             extra={**log_extra, "stage": "pipeline", "duration_ms": total_ms},
         )
-        return cached, intent_result
+        return cached, intent_result, True
 
     # --- Segment contract ---
     t0 = time.time()
@@ -166,7 +166,7 @@ async def run_review_pipeline(
             f"Pipeline complete (gap-checked, no LLM): {contract_id}/{category}",
             extra={**log_extra, "stage": "pipeline", "duration_ms": result.latency_ms},
         )
-        return result, intent_result
+        return result, intent_result, False
 
     # --- LLM judgment ---
     clause = gap_result.classified_clause
@@ -214,7 +214,7 @@ async def run_review_pipeline(
         db.add(query_log)
         await db.commit()
 
-        return result, intent_result
+        return result, intent_result, False
 
     # --- Grounding validation ---
     t0 = time.time()
@@ -289,4 +289,4 @@ async def run_review_pipeline(
         extra={**log_extra, "stage": "pipeline", "duration_ms": total_ms},
     )
 
-    return result, intent_result
+    return result, intent_result, False
